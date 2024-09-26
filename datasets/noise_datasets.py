@@ -12,9 +12,9 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from .utils import noisify
 from .randaugment import TransformFixMatch_CIFAR10, TransformFixMatch_CIFAR100, Transform_2strong_CIFAR100, TransformGJS, Transform2Weak_CIFAR10, Transform2Weak_CIFAR100
+from typing import List
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device(
-    'cpu')
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 
 class NoiseDataset(torchvision.datasets.VisionDataset):
@@ -183,17 +183,18 @@ class NoiseDataset(torchvision.datasets.VisionDataset):
         self.targets = new_label
 
 
-class NoiseCIFAR10(CIFAR10, NoiseDataset):
+class NoiseCIFAR10(CIFAR10):
 
     def __init__(
         self,
         root: str,
         train: bool = True,
         transform=None,
-        target_transform=None,
+        noisy_targets: np.ndarray=None,
+        filtered_index: List[int]=None,
+        filter_out: bool=False,
         download=True,
         mode: str = None,
-        noise_type: str = 'none',
         percent: float = 0.0,
     ) -> None:
 
@@ -209,14 +210,12 @@ class NoiseCIFAR10(CIFAR10, NoiseDataset):
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply(
                 [transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
-            # transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomGrayscale(p=0.2),
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465),
                                  (0.2023, 0.1994, 0.2010)),
         ])
         if mode == 'train_index':
-            # self.transform_train = Transform2Weak_CIFAR10((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
             self.transform_train = TransformFixMatch_CIFAR10(
                 (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
         elif mode == 'train_index_2strong':
@@ -232,24 +231,41 @@ class NoiseCIFAR10(CIFAR10, NoiseDataset):
         self.root = root
         self.mode = mode
         self.transform = self.transform_test
-        self.target_transform = None
-        asym_trans = {
-            9: 1,  # truck ->  automobile
-            2: 0,  # bird  ->  airplane
-            3: 5,  # cat   ->  dog
-            5: 3,  # dog   ->  cat
-            4: 7,  # deer  ->  horse
-        }
 
         CIFAR10.__init__(self,
                          root=root,
                          train=train,
                          transform=transform,
                          download=download)
-        NoiseDataset.__init__(self,
-                              noise_type=noise_type,
-                              asym_trans=asym_trans,
-                              percent=percent)
+
+        ## fixme
+        if noisy_targets is not None:
+            clean_train_labels = np.array(self.targets)
+            all_noisy_train_labels = np.asarray(noisy_targets)
+            # Calculate the number of labels to replace
+            num_to_replace = int(len(clean_train_labels) * percent)
+
+            # Randomly select indices to replace
+            indices_to_replace = np.random.choice(len(clean_train_labels), num_to_replace, replace=False)
+
+            # Create a copy of clean_train_labels to modify
+            modified_labels = clean_train_labels.copy()
+
+            # Replace the selected indices with noisy labels
+            modified_labels[indices_to_replace] = all_noisy_train_labels[indices_to_replace]
+
+            self.targets = [int(label) for label in modified_labels]
+
+        if filtered_index is not None:
+            if filter_out:
+                self.data = [x for i, x in enumerate(self.data) if i not in filtered_index]
+                self.targets = [x for i, x in enumerate(self.targets) if i not in filtered_index]
+            else:
+                self.data = [x for i, x in enumerate(self.data) if i in filtered_index]
+                self.targets = [x for i, x in enumerate(self.targets) if i in filtered_index]
+
+    def __len__(self):
+        return len(self.data)
 
     def __getitem__(self, index):
         image, target = self.data[index], self.targets[index]
@@ -263,7 +279,7 @@ class NoiseCIFAR10(CIFAR10, NoiseDataset):
             img1 = self.transform_train_strong(image)
             img2 = self.transform_train_strong(image)
             return raw, img1, img2, target
-        elif self.mode == 'train_index':
+        elif self.mode == 'train_index': # this mode is selected
             img = self.transform_train(image)
             return img, target, index
         elif self.mode == 'test':
@@ -362,32 +378,12 @@ class cifar_dataloader():
         self.noise_type = noise_type
         self.percent = percent
 
-    def run(self, mode):
-        if mode == 'train_single':
-            if self.cifar_type == 'cifar-10':
-                train_dataset = NoiseCIFAR10(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            elif self.cifar_type == 'cifar-100':
-                train_dataset = NoiseCIFAR100(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            else:
-                raise "incorrect cifar dataset name -> (`cifar-10`, `cifar-100`)"
-            train_loader = DataLoader(dataset=train_dataset,
-                                      batch_size=self.batch_size,
-                                      shuffle=True,
-                                      pin_memory=True,
-                                      drop_last=True,
-                                      num_workers=self.num_workers)
-            return train_loader
-        elif mode == 'train_index' or mode == 'train_index_2strong':
-            if self.cifar_type == 'cifar-10':
-                train_dataset = NoiseCIFAR10(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            elif self.cifar_type == 'cifar-100':
-                train_dataset = NoiseCIFAR100(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            else:
-                raise "incorrect cifar dataset name -> (`cifar-10`, `cifar-100`)"
+    def run(self, mode, noisy_targets, filtered_index):
+        if mode != 'test':
+            train_dataset = NoiseCIFAR10(root=self.root, train=True, transform=None,
+                                         noisy_targets=noisy_targets,
+                                         filtered_index=filtered_index,
+                                        percent=self.percent, mode=mode)
             train_loader = DataLoader(dataset=train_dataset,
                                       batch_size=self.batch_size,
                                       shuffle=True,
@@ -395,47 +391,29 @@ class cifar_dataloader():
                                       drop_last=False,
                                       num_workers=self.num_workers)
             return train_loader
-        elif mode == 'tripartite':
-            if self.cifar_type == 'cifar-10':
-                train_dataset = NoiseCIFAR10(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            elif self.cifar_type == 'cifar-100':
-                train_dataset = NoiseCIFAR100(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            else:
-                raise "incorrect cifar dataset name -> (`cifar-10`, `cifar-100`)"
-            train_loader = DataLoader(dataset=train_dataset,
-                                      batch_size=self.batch_size,
-                                      shuffle=True,
-                                      pin_memory=True,
-                                      drop_last=False,
-                                      num_workers=self.num_workers)
-            return train_loader
-        elif mode == 'train':
-            if self.cifar_type == 'cifar-10':
-                train_dataset = NoiseCIFAR10(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            elif self.cifar_type == 'cifar-100':
-                train_dataset = NoiseCIFAR100(root=self.root, train=True, transform=None, noise_type=self.noise_type, \
-                                                percent=self.percent, mode=mode)
-            train_loader = DataLoader(dataset=train_dataset,
-                                      batch_size=self.batch_size,
-                                      shuffle=True,
-                                      pin_memory=True,
-                                      drop_last=False,
-                                      num_workers=self.num_workers)
-            return train_loader
-        elif mode == 'test':
-            if self.cifar_type == 'cifar-10':
-                test_dataset = NoiseCIFAR10(self.root, train=False, transform=None, noise_type='none', \
-                                                percent=0.0, mode=mode)
-            elif self.cifar_type == 'cifar-100':
-                test_dataset = NoiseCIFAR100(self.root, train=False, transform=None, noise_type='none', \
-                                                percent=0.0, mode=mode)
-            test_loader = DataLoader(dataset=test_dataset,
+        else:
+            hard_test_dataset = NoiseCIFAR10(self.root, train=False, transform=None,
+                                        noisy_targets=noisy_targets,
+                                        filtered_index=filtered_index,
+                                         filter_out=False,
+                                        percent=0.0, mode=mode)
+            easy_test_dataset = NoiseCIFAR10(self.root, train=False, transform=None,
+                                             noisy_targets=noisy_targets,
+                                             filtered_index=filtered_index,
+                                             filter_out=True,
+                                             percent=0.0, mode=mode)
+            hard_test_loader = DataLoader(dataset=hard_test_dataset,
                                      batch_size=self.batch_size,
                                      shuffle=False,
                                      pin_memory=True,
-                                     drop_last=True,
+                                     drop_last=False,
                                      num_workers=self.num_workers)
-            return test_loader
+            easy_test_loader = DataLoader(dataset=easy_test_dataset,
+                                          batch_size=self.batch_size,
+                                          shuffle=False,
+                                          pin_memory=True,
+                                          drop_last=False,
+                                          num_workers=self.num_workers)
+            return easy_test_loader, hard_test_loader
+
+
