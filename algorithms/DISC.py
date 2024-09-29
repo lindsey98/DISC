@@ -291,11 +291,14 @@ class DISC:
 
                 if clean_num:
                     clean_loss_sup = self.criterion(w_logits[b_clean_flags], targets[b_clean_flags]) \
-                            + self.criterion(s_logits[b_clean_flags], targets[b_clean_flags])
+                                    + self.criterion(s_logits[b_clean_flags], targets[b_clean_flags])
                     loss_sup += clean_loss_sup * self.lamd_ce * (clean_num/batch_size) 
                 if hard_num:
                     hard_loss_sup = self.GCE_loss(w_logits[b_hard_flags], targets[b_hard_flags]) \
-                        + self.GCE_loss(s_logits[b_hard_flags], targets[b_hard_flags])
+                                    + self.GCE_loss(s_logits[b_hard_flags], targets[b_hard_flags])
+                    # todo: I change this loss
+                    # hard_loss_sup = self.criterion(w_logits[b_hard_flags], targets[b_hard_flags]) \
+                    #         + self.criterion(s_logits[b_hard_flags], targets[b_hard_flags])
                     loss_sup += hard_loss_sup * self.lamd_h * (hard_num/batch_size)
                 ###########################
                 
@@ -333,23 +336,27 @@ class DISC:
             labels = w_label.clone()
             
             ###############Selection###############
-            w_mask = self.w_probs[self.labels>=0, self.labels]>self.w_prev_confidence[self.labels>=0]
-            s_mask = self.s_probs[self.labels>=0, self.labels]>self.s_prev_confidence[self.labels>=0]
-            self.clean_flags = w_mask & s_mask
+            w_mask = self.w_probs[self.labels>=0, self.labels] > self.w_prev_confidence[self.labels>=0]
+            s_mask = self.s_probs[self.labels>=0, self.labels] > self.s_prev_confidence[self.labels>=0]
+            self.clean_flags = w_mask & s_mask # clean set: confidences higher than the moving previous confidence for BOTH views
             self.selected_flags = w_mask + s_mask
             self.w_selected_flags = w_mask & (~self.clean_flags) #H_w
             self.s_selected_flags = s_mask & (~self.clean_flags) #H_s
-            self.hard_flags = self.w_selected_flags + self.s_selected_flags #H       
+            self.hard_flags = self.w_selected_flags + self.s_selected_flags # hard set: confidences higher than the moving previous confidence for ONLY ONE of the view
             #######################################
 
             ###############Correction##############
             ws_threshold = (self.w_prev_confidence + self.s_prev_confidence)/2 + self.sigma
             ws_threshold = torch.min(ws_threshold, torch.tensor(0.99).to(self.device))
             self.correction_flags = ws_prob_max > ws_threshold
-            self.correction_flags = self.correction_flags & (~ self.selected_flags) # P-(C+H)
+            # correction set:
+            # the maximum confidence of 2 views exceeds threshold, and they don't change significantly from the previous confidences
+            # => STABLE, and we believe they are reliable
+            self.correction_flags = self.correction_flags & (~ self.selected_flags)
             #######################################
             
             ###############Mix set###############
+            # Purified set: ANY of the 2 views increase significantly OR STABLE set
             self.weak_flags = self.correction_flags + self.selected_flags
             self.weak_labels[self.selected_flags] = self.labels[self.selected_flags]
             self.weak_labels[self.correction_flags] = ws_label[self.correction_flags]
@@ -394,7 +401,7 @@ class DISC:
                 print("Weak num is %d"%weak_num)
         self.num_list.append((self.clean_flags.sum().cpu().numpy(), self.hard_flags.sum().cpu().numpy(), self.w_selected_flags.sum(), self.s_selected_flags.sum(), self.correction_flags.sum().cpu().numpy(), self.weak_flags.sum().cpu().numpy()))
 
-        if epoch==(self.epochs-1):
+        if epoch == (self.epochs-1):
             self.save_results()
         if self.adjust_lr:
             if self.optim_type == 'sgd':
@@ -402,7 +409,8 @@ class DISC:
             elif self.optim_type == 'adam':
                 self.adjust_learning_rate(self.optimizer, epoch)
                 print("lr is %.8f." % (self.alpha_plan[epoch]))
-                
+
+    @torch.inference_mode()
     def evaluate(self, test_loader):
         print('Evaluating ...')
 
@@ -428,7 +436,7 @@ class DISC:
         acc = 100 * float(correct) / float(total)
         self.accs[self.tmp_epoch] = acc
         if 'webvision' in self.dataset:
-            acc_top5 =100 * float(correct_top5)/float(total)
+            acc_top5 = 100 * float(correct_top5)/float(total)
             return acc, acc_top5
 
         if 'clothing1M' in self.dataset and self.tmp_epoch>1:
@@ -440,18 +448,26 @@ class DISC:
 
         return acc
 
-    def save_checkpoints(self):
-        checkpoint_root = 'checkpoints/%s/'%self.dataset
-        filename = checkpoint_root + 'save_epoch199_%s'%self.noise_type
-        
+    def save_checkpoints(self, checkpoint_root):
+        filename = os.path.join(checkpoint_root, f'{self.dataset}_DISC_{self.noise_type}_save_epoch199.pth')
+
         if not os.path.exists(checkpoint_root):
             os.makedirs(checkpoint_root)
 
-        state = {'weak_labels':self.weak_labels, 'weak_flags':self.weak_flags, 'weak selected flags':self.w_selected_flags, 
-                 'strong selected flags':self.s_selected_flags, 'clean_flags':self.clean_flags, 'labels':self.labels,
-                 'hard_flags':self.hard_flags, 'correction_flags':self.correction_flags, 'w_probs':self.w_probs, 's_probs':self.s_probs, 
-                 'epoch': self.start_epoch,'model': self.model_scratch.state_dict(), 'optimizer': self.optimizer.state_dict()}
-        torch.save(state, filename+'.pth')
+        state = {'weak_labels':self.weak_labels,
+                 'weak_flags':self.weak_flags,
+                 'weak selected flags':self.w_selected_flags,
+                 'strong selected flags':self.s_selected_flags,
+                 'clean_flags':self.clean_flags,
+                 'labels':self.labels,
+                 'hard_flags':self.hard_flags,
+                 'correction_flags':self.correction_flags,
+                 'w_probs':self.w_probs,
+                 's_probs':self.s_probs,
+                 'epoch': self.start_epoch,
+                 'model': self.model_scratch.state_dict(),
+                 'optimizer': self.optimizer.state_dict()}
+        torch.save(state, filename)
         print("The model has been saved !!!!!")
     
     def save_results(self, name='disc'):
@@ -461,13 +477,17 @@ class DISC:
         if not os.path.exists(save_root):
             os.makedirs(save_root)
         if 'cifar' in self.dataset:
-            results = {'num_list': self.num_list, 'acc_list': self.acc_list, 'test_acc': self.accs}
+            results = {'num_list': self.num_list,
+                       'acc_list': self.acc_list,
+                       'test_acc': self.accs}
         else:
-            results = {'num_list': self.num_list, 'test_acc': self.accs}
+            results = {'num_list': self.num_list,
+                       'test_acc': self.accs}
         np.save(filename, results)
 
-    def load_checkpoints(self):
-        filename = 'checkpoints/%s/start_epoch%d.pth'%(self.dataset, self.start_epoch)
+    def load_checkpoints(self, checkpoint_root):
+        filename = os.path.join(checkpoint_root,
+                                f'{self.dataset}_DISC_{self.noise_type}_save_epoch199.pth')
         model_parameters = torch.load(filename)
         self.model_scratch.load_state_dict(model_parameters['model'])
         self.s_selected_flags = model_parameters['strong selected flags']      
@@ -558,6 +578,7 @@ class DISC:
                 ['train', '16019d7e3df5f24257cddd939b257f8d'],
             ]
             base_folder = 'cifar-100-python'
+
         targets = []
         for file_name, checksum in train_list:
             file_path = os.path.join(root, base_folder, file_name)

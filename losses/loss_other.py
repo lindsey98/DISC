@@ -35,7 +35,7 @@ class SCELoss(torch.nn.Module):
         loss = self.alpha * ce + self.beta * rce.mean()
         return loss
 
-class GCELoss(torch.nn.Module):
+class GCELoss(torch.nn.Module): # fixme
     def __init__(self, num_classes, q=0.7, gpu=None):
         super(GCELoss, self).__init__()
         self.device = torch.device('cuda:%s'%gpu) if gpu else torch.device('cpu')

@@ -7,6 +7,8 @@ import numpy as np
 import nni
 import time
 import torch
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config',
@@ -96,9 +98,14 @@ def main():
                                   num_workers=config['num_workers'],
                                   noise_type=config['noise_type'],
                                   percent=config['percent'])
-    trainloader = dataloaders.run(mode=train_mode, noisy_targets=noisy_label_list, filtered_index=None)
+
+    trainloader = dataloaders.run(mode=train_mode,
+                                  noisy_targets=noisy_label_list,
+                                  filtered_index=None)
     hard_indices = np.load('./datasets/test_hard_ids_lt_train02aum.npy')
-    easy_test_loader, hard_test_loader = dataloaders.run(mode='test', noisy_targets=None, filtered_index=hard_indices)
+    easy_test_loader, hard_test_loader = dataloaders.run(mode='test',
+                                                         noisy_targets=None,
+                                                         filtered_index=hard_indices)
 
     num_easy_test_images = len(easy_test_loader.dataset)
     num_hard_test_images = len(hard_test_loader.dataset)
@@ -151,8 +158,7 @@ def main():
     min = total_min % 60
     sec = time_elapsed % 60
 
-    print('Training complete in {:.0f}h {:.0f}m {:.0f}s'.format(
-        hour, min, sec))
+    print('Training complete in {:.0f}h {:.0f}m {:.0f}s'.format(hour, min, sec))
 
     if config['save_result']:
         config['algorithm'] = config['algorithm'] + args.model_name
@@ -165,6 +171,7 @@ def main():
                      best_acc=best_acc,
                      best_epoch=best_epoch,
                      jsonfile=jsonfile)
+    model.save_checkpoints(checkpoint_root = args.save_path)
 
 
 if __name__ == '__main__':

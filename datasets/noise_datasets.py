@@ -246,6 +246,7 @@ class NoiseCIFAR10(CIFAR10):
             num_to_replace = int(len(clean_train_labels) * percent)
 
             # Randomly select indices to replace
+            np.random.seed(1)
             indices_to_replace = np.random.choice(len(clean_train_labels), num_to_replace, replace=False)
 
             # Create a copy of clean_train_labels to modify
